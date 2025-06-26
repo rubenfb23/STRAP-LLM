@@ -1,0 +1,10 @@
+torch
+torchvision
+torchaudio
+pytorch-geometric
+lz4
+zstandard
+transformers
+numpy
+psutil
+aiofiles
