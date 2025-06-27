@@ -1,7 +1,7 @@
 torch
 torchvision
 torchaudio
-pytorch-geometric
+torch-geometric
 lz4
 zstandard
 transformers
