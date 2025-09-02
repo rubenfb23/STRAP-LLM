@@ -1,9 +1,11 @@
+from llm_instrumentation.core.config import InstrumentationConfig
+from llm_instrumentation.core.framework import InstrumentationFramework
 from llm_instrumentation.core.hooks import HookGranularity
-from llm_instrumentation import InstrumentationFramework
-from transformers import AutoModelForCausalLM
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
-# Load model
+# Load model and tokenizer
 model = AutoModelForCausalLM.from_pretrained("meta-llama/Llama-2-7b-hf")
+tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf")
 
 # Configure instrumentation
 config = InstrumentationConfig(
@@ -18,6 +20,10 @@ framework = InstrumentationFramework(config)
 
 # Instrument model
 framework.instrument_model(model)
+
+# Prepare input
+sample_text = "The future of artificial intelligence is"
+input_ids = tokenizer.encode(sample_text, return_tensors="pt")
 
 # Run inference with data capture
 with framework.capture_activations("output.stream"):
