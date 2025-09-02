@@ -76,6 +76,7 @@ class TensorCompressionManager:
             "zstd": ZstdStrategy(),
             "fp16": FP16Strategy(),
             "delta": DeltaEncodingStrategy(),
+            "none": NoneStrategy(),
         }
         self.current_strategy = "lz4"
 
@@ -98,3 +99,19 @@ class TensorCompressionManager:
     def _tensor_to_bytes(self, tensor: torch.Tensor) -> bytes:
         """Efficient tensor serialization."""
         return tensor.cpu().numpy().tobytes()
+
+
+class NoneStrategy(CompressionStrategy):
+    """No-op compression strategy for raw byte passthrough."""
+
+    def compress(self, data: bytes) -> bytes:
+        return data
+
+    def decompress(self, data: bytes) -> bytes:
+        return data
+
+    def get_ratio(self) -> float:
+        return 1.0
+
+
+# No-op compression strategy added directly to TensorCompressionManager
