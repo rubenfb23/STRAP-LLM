@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "llm_instrumentation"
 version = "0.0.1"
 authors = [
-  { name="Your Name", email="you@example.com" },
+  { name="Ruben", email="rubenfernandezboullon@gmail.com" },
 ]
 description = "A high-performance instrumentation framework for large language model interpretability."
 readme = "README.md"
