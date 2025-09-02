@@ -98,12 +98,56 @@ class InstrumentationFramework:
                 self._serializer = None
 
     def analyze_activations(self, stream_path: str) -> Dict[str, Any]:
-        """Analyze captured activations from a stream."""
-        # TODO: Implement actual analysis logic
+        """Analyze captured activations from a stream.
+
+        Parses the stream format described in docs/STREAM_FORMAT.md and
+        returns lightweight metadata useful for downstream analysis, such as
+        packet counts, per-layer payload sizes, and aggregate totals.
+        """
+        import os
+        import struct
+
+        if not os.path.exists(stream_path):
+            raise FileNotFoundError(stream_path)
+
+        header_fmt = "!HI"
+        header_size = struct.calcsize(header_fmt)
+
+        total_packets = 0
+        total_bytes = 0
+        per_layer: Dict[str, Dict[str, Any]] = {}
+
+        with open(stream_path, "rb") as f:
+            while True:
+                header = f.read(header_size)
+                if not header:
+                    break
+                if len(header) != header_size:
+                    # Truncated header; stop parsing
+                    break
+                name_len, data_len = struct.unpack(header_fmt, header)
+                name_bytes = f.read(name_len)
+                if len(name_bytes) != name_len:
+                    break
+                layer_name = name_bytes.decode("utf-8") if name_len else ""
+                payload = f.read(data_len)
+                if len(payload) != data_len:
+                    break
+
+                total_packets += 1
+                total_bytes += data_len
+                stats = per_layer.setdefault(
+                    layer_name, {"count": 0, "bytes": 0}
+                )
+                stats["count"] += 1
+                stats["bytes"] += data_len
+
         return {
             "stream_path": stream_path,
             "compression": self.config.compression_algorithm,
-            "status": "analyzed",
+            "packets": total_packets,
+            "total_compressed_bytes": total_bytes,
+            "per_layer": per_layer,
         }
 
 
