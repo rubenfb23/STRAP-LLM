@@ -1,7 +1,6 @@
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
 import struct
-from typing import Optional
+from typing import Optional, List
 
 import aiofiles
 import torch
@@ -19,14 +18,19 @@ class StreamingSerializer:
         num_workers: int = 4,
         compression_algo: str = "lz4",
     ):
+        """Initialize the serializer and its resources.
+
+        - Removes reliance on a private ThreadPoolExecutor attribute.
+        - Keeps worker count explicit and controlled by `num_workers`.
+        """
         self.ring_buffer = RingBuffer(buffer_size)
-        self.executor = ThreadPoolExecutor(max_workers=num_workers)
+        self.num_workers = max(1, int(num_workers))
         self.compressor = TensorCompressionManager()
         self.compressor.current_strategy = compression_algo
         self.running = False
-        self.input_queue = asyncio.Queue()
+        self.input_queue: asyncio.Queue = asyncio.Queue()
         self.writer_task: Optional[asyncio.Task] = None
-        self.compression_tasks = []
+        self.compression_tasks: List[asyncio.Task] = []
 
     async def start_streaming(self, output_path: str) -> None:
         """Start asynchronous streaming to disk."""
@@ -37,7 +41,7 @@ class StreamingSerializer:
         self.writer_task = asyncio.create_task(self._async_writer(output_path))
         self.compression_tasks = [
             asyncio.create_task(self._compression_worker())
-            for _ in range(self.executor._max_workers)
+            for _ in range(self.num_workers)
         ]
 
     async def stop_streaming(self) -> None:
@@ -59,7 +63,6 @@ class StreamingSerializer:
         if self.writer_task:
             await self.writer_task
 
-        self.executor.shutdown()
 
     async def _async_writer(self, output_path: str) -> None:
         """Asynchronous file writer."""
@@ -90,6 +93,9 @@ class StreamingSerializer:
                 packet = header + layer_name_bytes + compressed_data
 
                 await asyncio.to_thread(self.ring_buffer.put, packet, timeout=1.0)
+            except Exception:
+                # Swallow and continue; a single bad item shouldn't kill the worker
+                pass
             finally:
                 self.input_queue.task_done()
 
