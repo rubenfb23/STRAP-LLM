@@ -21,31 +21,31 @@ This will create a `venv` directory in `llm-instrumentation` and install the pac
 The core functionality of the framework is to instrument a language model and capture its internal activations during inference. Here is a basic example of how to do this:
 
 ```python
-from llm_instrumentation import InstrumentationFramework
+from llm_instrumentation import (
+    InstrumentationFramework,
+    InstrumentationConfig,
+    HookGranularity,
+)
 from transformers import AutoModelForCausalLM
 
 # Load a pre-trained model
 model = AutoModelForCausalLM.from_pretrained("meta-llama/Llama-2-7b-hf")
 
-# (Optional) Configure the instrumentation settings
-# See docs/API.md for more details on configuration options
+# Configure the instrumentation settings
 config = InstrumentationConfig(
     granularity=HookGranularity.ATTENTION_ONLY,
-    compression_algorithm="lz4",
+    compression_algorithm="lz4",  # or "zstd" or "none"
     target_throughput_gbps=2.0,
-    max_memory_gb=24
+    max_memory_gb=24,
 )
 
-# Initialize the framework
+# Initialize and instrument
 framework = InstrumentationFramework(config)
-
-# Instrument the model with hooks
 framework.instrument_model(model)
 
 # Run inference and capture the activations to a file
 with framework.capture_activations("output.stream"):
-    # Your model generation code here
-    input_ids = ... # Prepare your input tensors
+    input_ids = ...  # Prepare your input tensors
     outputs = model.generate(input_ids, max_length=100)
 
 # The captured data is now in "output.stream"
@@ -80,6 +80,11 @@ analysis_results = framework.analyze_activations("output.stream")
 ```
 
 For a demonstration of the analysis and interpretability features, please see `examples/interpretability_demo.py`.
+
+Notes
+
+- If you are prototyping CPU-only or want to avoid compression cost, start with `compression_algorithm="none"`.
+- Use a smaller model locally to validate the capture path before scaling.
 
 ## Further Examples
 

@@ -29,6 +29,8 @@ To run the benchmarks, use the following script:
 ./scripts/run_benchmarks.sh
 ```
 
+Alternatively, invoke individual benchmark files with `python -m` from the package root.
+
 ### Generating Reports
 
 To generate performance reports from the benchmark results, use:
@@ -39,7 +41,7 @@ To generate performance reports from the benchmark results, use:
 
 ## Latest Results
 
-*This section should be updated with the latest benchmark results.*
+Populate this table with your latest environment-specific results (GPU model, driver, CUDA, model size, granularity, compression algorithm). For reproducibility, include the exact command and commit hash used for the run.
 
 | Metric                  | Target | Latest Result |
 | ----------------------- | ------ | ------------- |

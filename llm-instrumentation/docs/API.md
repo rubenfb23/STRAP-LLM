@@ -8,17 +8,22 @@ A data class for configuring the instrumentation framework.
 
 **Fields:**
 
-- `granularity` (`HookGranularity`): The level of detail to capture. Options are `ALL`, `ATTENTION_ONLY`, `FFN_ONLY`.
-- `compression_algorithm` (`str`): The compression algorithm to use. Supported values are `"lz4"`, `"zstd"`, and `None`.
+- `granularity` (`HookGranularity`): The level of detail to capture. Options:
+  - `FULL_TENSOR`: Capture all supported layer outputs.
+  - `SAMPLED_SLICES`: Capture a random subset of elements (see `HookConfig.sampling_rate`).
+  - `ATTENTION_ONLY`: Capture only attention layer outputs.
+  - `MLP_ONLY`: Capture only MLP outputs.
+- `compression_algorithm` (`str`): Compression to apply. Supported values are `"lz4"`, `"zstd"`, and `"none"`.
 - `target_throughput_gbps` (`float`): The target data capture rate in GB/s.
 - `max_memory_gb` (`float`): The maximum amount of host RAM to use for buffering.
 
 **Enums:**
 
 - `HookGranularity`:
-    - `ALL`: Capture all supported layer types.
-    - `ATTENTION_ONLY`: Capture only attention layer outputs.
-    - `FFN_ONLY`: Capture only feed-forward network outputs.
+  - `FULL_TENSOR`
+  - `SAMPLED_SLICES`
+  - `ATTENTION_ONLY`
+  - `MLP_ONLY`
 
 ## `InstrumentationFramework`
 
@@ -65,4 +70,4 @@ Loads captured activation data from a file and returns an analysis object.
 
 **Returns:**
 
-- `dict`: A dictionary containing analysis results, such as causal graphs and sparse autoencoder features.
+- `dict`: A dictionary with metadata and analysis placeholders. Causal graphs and SAE features are planned.
