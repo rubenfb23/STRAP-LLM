@@ -147,16 +147,37 @@ def _prepare_stats() -> Dict[int, DeviceStats]:
 def _collect_stats(
     snapshot: Dict[str, object], devices: Dict[int, DeviceStats]
 ) -> None:
-    latency_entries = snapshot.get("latency_histogram") or []
-    inflight_entries = snapshot.get("inflight") or []
+    # Ensure we always work with lists of dicts for type-checkers and safety
+    raw_latency = snapshot.get("latency_histogram")
+    latency_entries: List[Dict[str, object]] = (
+        raw_latency if isinstance(raw_latency, list) else []
+    )
+    raw_inflight = snapshot.get("inflight")
+    inflight_entries: List[Dict[str, object]] = (
+        raw_inflight if isinstance(raw_inflight, list) else []
+    )
     timestamp = float(snapshot.get("timestamp", math.nan))
 
     devices_in_snapshot = set()
-    queue_depths: Dict[int, int] = {
-        entry.get("device_id"): int(entry.get("count", 0))
-        for entry in inflight_entries
-        if isinstance(entry, dict)
-    }
+
+    # Safely build queue_depths with proper int keys/values
+    queue_depths: Dict[int, int] = {}
+    for entry in inflight_entries:
+        if not isinstance(entry, dict):
+            continue
+        device_id_obj = entry.get("device_id")
+        count_obj = entry.get("count", 0)
+        try:
+            device_id = int(device_id_obj) if device_id_obj is not None else None
+        except (TypeError, ValueError):
+            device_id = None
+        if device_id is None:
+            continue
+        try:
+            count = int(count_obj)
+        except (TypeError, ValueError):
+            count = 0
+        queue_depths[device_id] = count
 
     for raw in latency_entries:
         if not isinstance(raw, dict):
