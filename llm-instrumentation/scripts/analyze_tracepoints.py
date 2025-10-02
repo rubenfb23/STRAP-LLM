@@ -152,7 +152,11 @@ def _collect_stats(
     timestamp = float(snapshot.get("timestamp", math.nan))
 
     devices_in_snapshot = set()
-    queue_depths: Dict[int, int] = {entry.get("device_id"): int(entry.get("count", 0)) for entry in inflight_entries if isinstance(entry, dict)}
+    queue_depths: Dict[int, int] = {
+        entry.get("device_id"): int(entry.get("count", 0))
+        for entry in inflight_entries
+        if isinstance(entry, dict)
+    }
 
     for raw in latency_entries:
         if not isinstance(raw, dict):
@@ -296,7 +300,9 @@ def _generate_charts(
                 plt.close(fig)
 
         if stats.request_series:
-            times = [pair[0] for pair in stats.request_series if not math.isnan(pair[0])]
+            times = [
+                pair[0] for pair in stats.request_series if not math.isnan(pair[0])
+            ]
             if times:
                 base_ts = min(times)
                 series = [
