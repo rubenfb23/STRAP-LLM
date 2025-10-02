@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional
 
 import argparse
 import json
+import mmap
 import os
 import sys
 import threading
@@ -53,7 +54,7 @@ if TYPE_CHECKING:
 else:
     BPFProtocol = Any  # help type checkers when running
 
-from time import sleep, strftime
+from time import sleep
 
 # Validar que los tracepoints existen antes de compilar el programa eBPF. La
 # carga del BPF adjunta automáticamente cualquier función cuyo nombre comience
@@ -177,7 +178,13 @@ def _parse_args() -> argparse.Namespace:
 
 
 class AsyncJSONLWriter:
-    """Escritura asíncrona de snapshots JSONL para minimizar overhead."""
+    """Escritura asíncrona de snapshots JSONL usando ``mmap`` para minimizar copias.
+
+    El uso de memory mapping evita crear buffers intermedios en userland cada vez
+    que escribimos al archivo destino y permite crecer el archivo de manera
+    amortizada. Esto reduce la presión de memoria/cpu cuando el histograma es
+    grande o el intervalo de muestreo es corto.
+    """
 
     def __init__(self, path: Path, flush_every: int, fsync_enabled: bool) -> None:
         self._path = path
@@ -188,6 +195,8 @@ class AsyncJSONLWriter:
             target=self._run, name="io-trace-writer", daemon=True
         )
         self._started = False
+        self._min_map_size = max(1, mmap.ALLOCATIONGRANULARITY)
+        self._last_error: Optional[Exception] = None
 
     def start(self) -> None:
         if self._started:
@@ -210,37 +219,138 @@ class AsyncJSONLWriter:
 
     def _run(self) -> None:
         lines: List[str] = []
+        state: Dict[str, Any] = {
+            "fd": None,
+            "mm": None,
+            "map_length": 0,
+            "write_offset": 0,
+            "data_length": 0,
+        }
         try:
-            with self._path.open("a", encoding="utf-8") as handle:
-                while True:
-                    item = self._queue.get()
-                    if item is None:
-                        break
-                    lines.append(item)
-                    if len(lines) >= self._flush_every:
-                        self._flush(handle, lines)
-                if lines:
-                    self._flush(handle, lines)
-        except Exception as exc:  # pragma: no cover - proteger el hilo
-            print(f"[tracepoints] Error en escritor asíncrono: {exc}", file=sys.stderr)
+            fd = os.open(self._path, os.O_RDWR | os.O_CREAT)
+            state["fd"] = fd
 
-    def _flush(self, handle: Any, lines: List[str]) -> None:
+            existing_size = os.fstat(fd).st_size
+            state["data_length"] = existing_size
+            state["write_offset"] = existing_size
+
+            map_length = max(existing_size, self._min_map_size)
+            if map_length == 0:
+                map_length = self._min_map_size
+            if existing_size < map_length:
+                os.ftruncate(fd, map_length)
+
+            state["mm"] = mmap.mmap(fd, max(map_length, 1), access=mmap.ACCESS_WRITE)
+            state["map_length"] = max(map_length, 1)
+
+            while True:
+                item = self._queue.get()
+                if item is None:
+                    break
+                lines.append(item)
+                if len(lines) >= self._flush_every:
+                    self._flush(state, lines)
+            if lines:
+                self._flush(state, lines)
+        except Exception as exc:  # pragma: no cover - proteger el hilo
+            self._last_error = exc
+        finally:
+            mm_obj = state.get("mm")
+            fd_obj = state.get("fd")
+            data_length = int(state.get("data_length") or 0)
+            if mm_obj is not None:
+                try:
+                    mm_obj.flush()
+                finally:
+                    mm_obj.close()
+            if fd_obj is not None:
+                try:
+                    os.ftruncate(fd_obj, data_length)
+                except OSError:
+                    pass
+                os.close(fd_obj)
+
+    def _flush(self, state: Dict[str, Any], lines: List[str]) -> None:
+        mm_obj: Optional[mmap.mmap] = state.get("mm")
+        fd = state.get("fd")
+        if mm_obj is None or fd is None:
+            return
+
         payload = "\n".join(lines) + "\n"
-        handle.write(payload)
-        handle.flush()
+        encoded = payload.encode("utf-8")
+
+        required_length = state["write_offset"] + len(encoded)
+        mm_obj = self._ensure_capacity(state, required_length)
+
+        start = state["write_offset"]
+        mm_obj[start : start + len(encoded)] = encoded
+        state["write_offset"] = start + len(encoded)
+        state["data_length"] = state["write_offset"]
+
+        try:
+            mm_obj.flush()
+        except (BufferError, ValueError):  # pragma: no cover - depende del backend mmap
+            pass
+
         if self._fsync_enabled:
-            os.fsync(handle.fileno())
+            os.fsync(fd)
+
         lines.clear()
+
+    def _ensure_capacity(self, state: Dict[str, Any], required_length: int) -> mmap.mmap:
+        mm_obj: mmap.mmap = state["mm"]
+        fd: int = state["fd"]
+        current_length = max(int(state.get("map_length", 0)), 1)
+
+        if required_length <= current_length:
+            return mm_obj
+
+        new_length = current_length
+        while new_length < required_length:
+            new_length *= 2
+
+        mm_obj.flush()
+        mm_obj.close()
+
+        os.ftruncate(fd, new_length)
+        state["mm"] = mmap.mmap(fd, new_length, access=mmap.ACCESS_WRITE)
+        state["map_length"] = new_length
+        return state["mm"]
 
 DISK_LOOKUP: Dict[str, str] = {}
 
 
 def _refresh_disk_lookup(proc_diskstats: str = "/proc/diskstats") -> None:
+    """Actualiza el cache de discos usando ``mmap`` para evitar copias completas."""
+
     DISK_LOOKUP.clear()
-    with open(proc_diskstats) as stats:
-        for line in stats:
-            major, minor, name = line.split()[0:3]
-            DISK_LOOKUP[f"{major},{minor}"] = name
+    path = Path(proc_diskstats)
+    data = b""
+    try:
+        with path.open("rb") as stats:
+            fd = stats.fileno()
+            try:
+                with mmap.mmap(fd, 0, access=mmap.ACCESS_READ) as mm:
+                    data = mm[:]
+            except (ValueError, BufferError, OSError):
+                # Algunos pseudo archivos como /proc no soportan mmap; usamos os.read.
+                chunks: List[bytes] = []
+                while True:
+                    chunk = os.read(fd, 65536)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                data = b"".join(chunks)
+    except FileNotFoundError:
+        return
+
+    text = data.decode("utf-8", "replace")
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        major, minor, name = parts[0:3]
+        DISK_LOOKUP[f"{major},{minor}"] = name
 
 
 def disk_print(device_id: int) -> str:
@@ -344,39 +454,21 @@ def main() -> None:
     dist = b.get_table("latency_hist")
     start_map = b.get_table("start")
 
-    print(
-        "Trazando latencia I/O... Presiona Ctrl-C para terminar (intervalo = "
-        f"{args.interval:.1f}s)"
-    )
-
     try:
         while True:
             sleep(args.interval)
             snapshot_ts = time.time()
-
-            latency_snapshot = _collect_latency_snapshot(dist)
-
-            print(f"\n{strftime('%H:%M:%S')} - Latencia I/O por dispositivo:")
-            dist.print_log2_hist("microsegundos", "disk", disk_print)
-            dist.clear()
-
-            inflight_snapshot = _collect_inflight_snapshot(start_map)
-
-            if inflight_snapshot:
-                print("Cola I/O en vuelo (requests):")
-                for entry in inflight_snapshot:
-                    print(f"  {entry['device_name']:>12} -> {entry['count']}")
-            else:
-                print("Cola I/O en vuelo (requests): sin pendientes")
-
             if writer is not None:
+                latency_snapshot = _collect_latency_snapshot(dist)
+                inflight_snapshot = _collect_inflight_snapshot(start_map)
                 writer.submit(
                     _snapshot_to_json(
                         snapshot_ts, args.interval, latency_snapshot, inflight_snapshot
                     )
                 )
+            dist.clear()
     except KeyboardInterrupt:
-        print("\nFinalizando...")
+        pass
     finally:
         if writer is not None:
             writer.close()
