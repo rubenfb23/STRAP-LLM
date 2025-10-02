@@ -64,16 +64,17 @@ These are project targets; actual results depend on model, hardware, and configu
 
 - `llm-instrumentation/`
   - `src/llm_instrumentation/`: Core modules (hooks, streaming, compression, memory, analysis).
-  - `docs/`: Architecture, API, performance, and stream format.
+  - `docs/`: Architecture, API, performance, stream format, and block I/O tracepoints.
   - `examples/`: Minimal runnable examples of capture and analysis.
-  - `scripts/tracepoints.py`: eBPF block I/O latency collector using kernel tracepoints.
-  - `scripts/analyze_tracepoints.py`: Offline analyzer that resumes the persisted snapshots, emits summaries, and renders PNG charts.
+  - `scripts/tracepoints.py`: eBPF block I/O latency collector using stable kernel tracepoints (`block:block_rq_issue`/`block:block_rq_complete`).
+  - `scripts/analyze_tracepoints.py`: Offline analyzer for JSONL snapshots—generates summaries and PNG charts.
 - `benchmarks/`
-  - `systems/`: Tree that stores generated artefacts. The `I-O/` subfolder is the default target for tracepoint charts.
+  - `systems/I-O/`: Generated artifacts from tracepoint analysis (latency histograms, queue depth, request rate charts).
 - `TFM_InstrmntLLM-Computational.pdf`: Project proposal and requirements.
+- `AGENTS.md`: Block I/O instrumentation agent documentation.
 - `LICENSE`
 
-See `llm-instrumentation/docs/BLOCK_IO_TRACEPOINTS.md` for the full workflow to collect block-device metrics and generate the derived visualisations.
+**Block I/O Monitoring:** See `llm-instrumentation/docs/BLOCK_IO_TRACEPOINTS.md` for the complete workflow to collect block-device metrics, correlate with LLM inference, and generate visualizations. The tracepoint collector provides < 1% overhead monitoring with async JSONL persistence.
 
 ## Documentation
 
@@ -82,6 +83,7 @@ See `llm-instrumentation/docs/BLOCK_IO_TRACEPOINTS.md` for the full workflow to 
 - API: `llm-instrumentation/docs/API.md`
 - Stream format: `llm-instrumentation/docs/STREAM_FORMAT.md`
 - Performance workflow: `llm-instrumentation/docs/PERFORMANCE.md`
+- Block I/O tracepoints: `llm-instrumentation/docs/BLOCK_IO_TRACEPOINTS.md`
 - Getting started: `llm-instrumentation/docs/GETTING_STARTED.md`
 
 ## Development

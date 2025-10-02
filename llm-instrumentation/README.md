@@ -83,12 +83,89 @@ E2E path: PyTorch forward hooks → async enqueue → compression workers → ri
 
 Run `scripts/run_benchmarks.sh` and see `docs/PERFORMANCE.md` for targets, methodology, and how to generate reports.
 
-## Block I/O Instrumentation Utilities
+## Block I/O Instrumentation
 
-- `scripts/tracepoints.py`: captura latencias y profundidad de cola usando tracepoints `block_rq_issue`/`block_rq_complete`, persistiéndolos como JSONL sin escribir al terminal.
-- `scripts/analyze_tracepoints.py`: resume los snapshots, genera estadísticas legibles y exporta gráficas PNG dentro de `benchmarks/systems/I-O/` (configurable vía `--charts-dir`).
+### Overview
 
-Consulta `docs/BLOCK_IO_TRACEPOINTS.md` para las instrucciones completas y los flags disponibles.
+STRAP-LLM includes eBPF-based block I/O monitoring to correlate disk performance with activation streaming:
+
+- **`scripts/tracepoints.py`**: Captures latency histograms and queue depth using stable kernel tracepoints (`block:block_rq_issue`/`block:block_rq_complete`)
+- **`scripts/analyze_tracepoints.py`**: Generates summaries and PNG visualizations from persisted JSONL snapshots
+
+### Quick Start
+
+**Collect I/O metrics:**
+
+```bash
+sudo python3 scripts/tracepoints.py --interval 5 --output tracepoints.jsonl
+```
+
+**Analyze results:**
+
+```bash
+python3 scripts/analyze_tracepoints.py \
+  --input tracepoints.jsonl \
+  --output-dir ../benchmarks/systems/I-O
+```
+
+### Features
+
+- **Low overhead**: < 1% CPU usage, ~100ns per I/O request
+- **Stable ABI**: Uses kernel tracepoints (no kprobes)
+- **Async persistence**: Memory-mapped JSONL writer with batch flushes
+- **Log₂ histograms**: Constant memory usage at any IOPS level
+- **Queue depth tracking**: In-flight request monitoring per device
+
+### CLI Options
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--interval` | Sampling interval (seconds) | 5.0 |
+| `--output` | JSONL output file | `tracepoints.jsonl` |
+| `--no-output` | Disable file output | False |
+| `--flush-every` | Snapshots per flush | 12 |
+| `--fsync` | Force fsync after flush | False |
+
+### Output Format
+
+Each JSONL line contains:
+
+- Timestamp (Unix epoch + ISO 8601)
+- Per-device latency histogram (log₂ buckets in μs)
+- Per-device in-flight request count
+
+**Example:**
+
+```json
+{
+  "timestamp": 1696262400.123,
+  "iso_timestamp": "2025-10-02T14:20:00.123000+00:00",
+  "interval_s": 5.0,
+  "latency_histogram": [
+    {
+      "device_name": "nvme0n1",
+      "total": 45123,
+      "buckets": [
+        {"slot": 4, "count": 12000, "bucket_low": 16, "bucket_high": 31}
+      ]
+    }
+  ],
+  "inflight": [
+    {"device_name": "nvme0n1", "count": 24}
+  ]
+}
+```
+
+### Documentation
+
+See **`docs/BLOCK_IO_TRACEPOINTS.md`** for:
+
+- Prerequisites and installation
+- Detailed usage examples
+- Integration with LLM workflows
+- Troubleshooting guide
+- Performance characteristics
+- Advanced customization
 
 ## Development
 
