@@ -83,6 +83,13 @@ E2E path: PyTorch forward hooks → async enqueue → compression workers → ri
 
 Run `scripts/run_benchmarks.sh` and see `docs/PERFORMANCE.md` for targets, methodology, and how to generate reports.
 
+## Block I/O Instrumentation Utilities
+
+- `scripts/tracepoints.py`: captura latencias y profundidad de cola usando tracepoints `block_rq_issue`/`block_rq_complete`, persistiéndolos como JSONL sin escribir al terminal.
+- `scripts/analyze_tracepoints.py`: resume los snapshots, genera estadísticas legibles y exporta gráficas PNG dentro de `benchmarks/systems/I-O/` (configurable vía `--charts-dir`).
+
+Consulta `docs/BLOCK_IO_TRACEPOINTS.md` para las instrucciones completas y los flags disponibles.
+
 ## Development
 
 - Tests: `pytest -q` in repo root or the package directory.

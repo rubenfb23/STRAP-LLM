@@ -66,9 +66,14 @@ These are project targets; actual results depend on model, hardware, and configu
   - `src/llm_instrumentation/`: Core modules (hooks, streaming, compression, memory, analysis).
   - `docs/`: Architecture, API, performance, and stream format.
   - `examples/`: Minimal runnable examples of capture and analysis.
-  - `benchmarks/`: Scripts to measure throughput, compression, and memory.
+  - `scripts/tracepoints.py`: eBPF block I/O latency collector using kernel tracepoints.
+  - `scripts/analyze_tracepoints.py`: Offline analyzer that resumes the persisted snapshots, emits summaries, and renders PNG charts.
+- `benchmarks/`
+  - `systems/`: Tree that stores generated artefacts. The `I-O/` subfolder is the default target for tracepoint charts.
 - `TFM_InstrmntLLM-Computational.pdf`: Project proposal and requirements.
 - `LICENSE`
+
+See `llm-instrumentation/docs/BLOCK_IO_TRACEPOINTS.md` for the full workflow to collect block-device metrics and generate the derived visualisations.
 
 ## Documentation
 

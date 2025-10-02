@@ -5,7 +5,7 @@
 ```
 benchmarks/
 └── systems/
-    └── I-O/           # Resultados y gráficos producidos por analyze_tracepoints.py
+    └── I-O/           # PNG generadas por scripts/analyze_tracepoints.py
 ```
 
-Añade subsecciones adicionales dentro de `systems/` según sea necesario (p. ej. `CPU/`, `Network/`, etc.)
+El analizador crea archivos con el patrón `*-latency_hist.png`, `*-queue_depth.png` y `*-requests.png` por dispositivo. Siéntete libre de añadir directorios hermanos (por ejemplo `CPU/`, `Network/`) para otros artefactos de bench.
