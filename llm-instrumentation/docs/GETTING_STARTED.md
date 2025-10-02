@@ -94,3 +94,13 @@ The `examples` directory contains more advanced usage scenarios, including:
 *   `interpretability_demo.py`: Shows how to use the analysis tools to gain insights from the captured data.
 
 Feel free to explore these examples to better understand the capabilities of the framework.
+
+## Block I/O Instrumentation
+
+For measuring storage latency and queue depth alongside model runs, the repository ships an eBPF-based helper under `scripts/tracepoints.py`. It attaches to the stable `block:block_rq_*` tracepoints, prints log2 histograms per device, and can persist JSONL snapshots for offline analysis. Run it with root privileges:
+
+```bash
+sudo python3 llm-instrumentation/scripts/tracepoints.py --interval 5 --output tracepoints.jsonl
+```
+
+Use `--no-output` to disable persistence or tune `--flush-every`/`--fsync` for durability. See `docs/BLOCK_IO_TRACEPOINTS.md` for the full CLI and data format reference.
