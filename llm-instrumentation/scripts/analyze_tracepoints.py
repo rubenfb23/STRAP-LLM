@@ -24,6 +24,12 @@ def _parse_args() -> argparse.Namespace:
         help="Ruta al archivo JSONL exportado por tracepoints.py (default: ./tracepoints.jsonl)",
     )
     parser.add_argument(
+        "--system-metrics",
+        type=Path,
+        default=Path("system_metrics.jsonl"),
+        help="Ruta al archivo JSONL exportado por system_metrics.py (default: ./system_metrics.jsonl)",
+    )
+    parser.add_argument(
         "--top",
         type=int,
         default=0,
@@ -52,7 +58,7 @@ def _parse_args() -> argparse.Namespace:
         default="all",
         help=(
             "Tipos de gráficas a generar (lista separada por comas). "
-            "Opciones: hist,queue,requests,percentiles,heatmap,qdepth_iops. "
+            "Opciones: hist,queue,requests,percentiles,heatmap,qdepth_iops,importance. "
             "Usa 'all' para habilitar todas."
         ),
     )
@@ -112,6 +118,22 @@ class DeviceStats:
         return self.queue_sum / self.queue_samples
 
 
+@dataclass
+class SystemSnapshot:
+    timestamp: float
+    interval_s: float
+    off_cpu_ns: Dict[str, int]
+    page_faults: Dict[str, int]
+    pressure: Dict[str, Dict[str, Dict[str, float]]]
+
+
+@dataclass
+class SystemMetricsData:
+    snapshots: List[SystemSnapshot] = field(default_factory=list)
+    total_offcpu_ns: Dict[str, float] = field(default_factory=dict)
+    total_page_faults: Dict[str, int] = field(default_factory=dict)
+
+
 DEFAULT_CHART_TYPES: Set[str] = {
     "hist",
     "queue",
@@ -119,6 +141,7 @@ DEFAULT_CHART_TYPES: Set[str] = {
     "percentiles",
     "heatmap",
     "qdepth_iops",
+    "importance",
 }
 
 
@@ -243,7 +266,309 @@ def _read_snapshots(path: Path) -> Iterable[Dict[str, object]]:
             try:
                 yield json.loads(text)
             except json.JSONDecodeError:
-                raise ValueError(f"Línea {lineno}: JSON inválido") from None
+                print(
+                    f"Aviso: línea {lineno} en {path} no contiene JSON válido, se omite.",
+                    file=sys.stderr,
+                )
+                continue
+
+
+def _parse_pid_map(raw: object) -> Dict[str, int]:
+    result: Dict[str, int] = {}
+    if isinstance(raw, dict):
+        for key, value in raw.items():
+            pid = str(key)
+            try:
+                metric = int(value)
+            except (TypeError, ValueError):
+                continue
+            result[pid] = metric
+    return result
+
+
+def _sanitize_pressure(raw: object) -> Dict[str, Dict[str, Dict[str, float]]]:
+    cleaned: Dict[str, Dict[str, Dict[str, float]]] = {}
+    if not isinstance(raw, dict):
+        return cleaned
+    for resource, scopes in raw.items():
+        if not isinstance(scopes, dict):
+            continue
+        resource_payload: Dict[str, Dict[str, float]] = {}
+        for scope, metrics in scopes.items():
+            if not isinstance(metrics, dict):
+                continue
+            metric_payload: Dict[str, float] = {}
+            for key, value in metrics.items():
+                try:
+                    metric_payload[key] = float(value)
+                except (TypeError, ValueError):
+                    continue
+            if metric_payload:
+                resource_payload[scope] = metric_payload
+        if resource_payload:
+            cleaned[str(resource)] = resource_payload
+    return cleaned
+
+
+def _read_system_metrics(path: Path) -> Optional[SystemMetricsData]:
+    if not path.exists():
+        return None
+
+    data = SystemMetricsData()
+    for snapshot in _read_snapshots(path):
+        if not isinstance(snapshot, dict):
+            continue
+        timestamp = float(snapshot.get("timestamp", math.nan))
+        if math.isnan(timestamp):
+            continue
+        interval_s = float(snapshot.get("interval_s", math.nan))
+
+        off_cpu_map = _parse_pid_map(snapshot.get("off_cpu_ns"))
+        page_faults_map = _parse_pid_map(snapshot.get("page_faults"))
+        pressure = _sanitize_pressure(snapshot.get("pressure"))
+
+        data.snapshots.append(
+            SystemSnapshot(
+                timestamp=timestamp,
+                interval_s=interval_s,
+                off_cpu_ns=off_cpu_map,
+                page_faults=page_faults_map,
+                pressure=pressure,
+            )
+        )
+
+        for pid, value in off_cpu_map.items():
+            data.total_offcpu_ns[pid] = data.total_offcpu_ns.get(pid, 0.0) + float(
+                value
+            )
+        for pid, value in page_faults_map.items():
+            data.total_page_faults[pid] = data.total_page_faults.get(pid, 0) + int(
+                value
+            )
+
+    if not data.snapshots:
+        return None
+
+    data.snapshots.sort(key=lambda snap: snap.timestamp)
+    return data
+
+
+def _safe_interval(value: float) -> float:
+    if math.isnan(value) or value <= 0:
+        return 1.0
+    return value
+
+
+def _extract_pressure_value(
+    pressure: Dict[str, Dict[str, Dict[str, float]]], resource: str
+) -> Optional[float]:
+    resource_payload = pressure.get(resource)
+    if not resource_payload:
+        return None
+    some_scope = resource_payload.get("some")
+    if not some_scope:
+        # Tomar cualquier scope disponible (ej. "full")
+        for metrics in resource_payload.values():
+            if metrics:
+                some_scope = metrics
+                break
+    if not some_scope:
+        return None
+    for key in ("avg10", "avg60", "avg300", "total", "stall"):
+        value = some_scope.get(key)
+        if value is not None:
+            return float(value)
+    # Como fallback, devolver el primer valor disponible
+    if some_scope:
+        return float(next(iter(some_scope.values())))
+    return None
+
+
+def _align_snapshots(
+    latency_snapshots: List[LatencySnapshot],
+    system_snapshots: List[SystemSnapshot],
+) -> List[Tuple[LatencySnapshot, SystemSnapshot]]:
+    if not latency_snapshots or not system_snapshots:
+        return []
+    latency_sorted = sorted(latency_snapshots, key=lambda snap: snap.timestamp)
+    system_sorted = sorted(system_snapshots, key=lambda snap: snap.timestamp)
+
+    aligned: List[Tuple[LatencySnapshot, SystemSnapshot]] = []
+    i = 0
+    j = 0
+    while i < len(latency_sorted) and j < len(system_sorted):
+        lat_snap = latency_sorted[i]
+        sys_snap = system_sorted[j]
+        tolerance = max(
+            _safe_interval(lat_snap.interval_s),
+            _safe_interval(sys_snap.interval_s),
+            1.0,
+        ) * 0.75
+        delta = sys_snap.timestamp - lat_snap.timestamp
+        if abs(delta) <= tolerance:
+            aligned.append((lat_snap, sys_snap))
+            i += 1
+            j += 1
+        elif delta < 0:
+            j += 1
+        else:
+            i += 1
+    return aligned
+
+
+def _pearson_corr(pairs: List[Tuple[float, float]]) -> Optional[float]:
+    if len(pairs) < 2:
+        return None
+    xs = [p[0] for p in pairs]
+    ys = [p[1] for p in pairs]
+    mean_x = sum(xs) / len(xs)
+    mean_y = sum(ys) / len(ys)
+    num = 0.0
+    denom_x = 0.0
+    denom_y = 0.0
+    for x, y in pairs:
+        dx = x - mean_x
+        dy = y - mean_y
+        num += dx * dy
+        denom_x += dx * dx
+        denom_y += dy * dy
+    if denom_x <= 0 or denom_y <= 0:
+        return None
+    return num / math.sqrt(denom_x * denom_y)
+
+
+def _compute_importance_payload(
+    latency_snapshots: List[LatencySnapshot],
+    system_data: Optional[SystemMetricsData],
+    percentiles: List[float],
+) -> Optional[Dict[str, object]]:
+    if not system_data or not latency_snapshots:
+        return None
+
+    aligned = _align_snapshots(latency_snapshots, system_data.snapshots)
+    if not aligned:
+        top_offcpu = sorted(
+            (
+                (pid, total_ns / 1_000_000.0)
+                for pid, total_ns in system_data.total_offcpu_ns.items()
+                if total_ns > 0
+            ),
+            key=lambda item: item[1],
+            reverse=True,
+        )[:10]
+        top_pagefaults = sorted(
+            (
+                (pid, count)
+                for pid, count in system_data.total_page_faults.items()
+                if count > 0
+            ),
+            key=lambda item: item[1],
+            reverse=True,
+        )[:10]
+        if not top_offcpu and not top_pagefaults:
+            return None
+        return {
+            "correlations": [],
+            "time_series": [],
+            "top_offcpu": top_offcpu,
+            "top_pagefaults": top_pagefaults,
+            "aligned_pairs": 0,
+        }
+
+    target_percentile = max(percentiles) if percentiles else 95.0
+    feature_points: Dict[str, List[Tuple[float, float]]] = {
+        "off_cpu_ms": [],
+        "page_faults_per_s": [],
+        "cpu_pressure": [],
+        "io_pressure": [],
+        "memory_pressure": [],
+    }
+    time_series: List[Dict[str, float]] = []
+    base_ts = aligned[0][0].timestamp
+
+    for lat_snap, sys_snap in aligned:
+        percentile_value = _compute_percentiles(
+            lat_snap.bucket_counts, [target_percentile]
+        ).get(target_percentile)
+        if percentile_value is None:
+            continue
+        total_offcpu_ns = sum(sys_snap.off_cpu_ns.values())
+        total_page_faults = sum(sys_snap.page_faults.values())
+        interval = _safe_interval(
+            sys_snap.interval_s if not math.isnan(sys_snap.interval_s) else lat_snap.interval_s
+        )
+        off_cpu_ms = total_offcpu_ns / 1_000_000.0
+        page_faults_per_s = (
+            total_page_faults / interval if interval > 0 else float(total_page_faults)
+        )
+        cpu_pressure = _extract_pressure_value(sys_snap.pressure, "cpu")
+        io_pressure = _extract_pressure_value(sys_snap.pressure, "io")
+        mem_pressure = _extract_pressure_value(sys_snap.pressure, "memory")
+
+        feature_points["off_cpu_ms"].append((percentile_value, off_cpu_ms))
+        feature_points["page_faults_per_s"].append(
+            (percentile_value, page_faults_per_s)
+        )
+        if cpu_pressure is not None:
+            feature_points["cpu_pressure"].append((percentile_value, cpu_pressure))
+        if io_pressure is not None:
+            feature_points["io_pressure"].append((percentile_value, io_pressure))
+        if mem_pressure is not None:
+            feature_points["memory_pressure"].append((percentile_value, mem_pressure))
+
+        time_series.append(
+            {
+                "time": lat_snap.timestamp - base_ts,
+                "latency_us": float(percentile_value),
+                "off_cpu_ms": off_cpu_ms,
+                "page_faults_per_s": page_faults_per_s,
+                "cpu_pressure": float(cpu_pressure)
+                if cpu_pressure is not None
+                else math.nan,
+                "io_pressure": float(io_pressure)
+                if io_pressure is not None
+                else math.nan,
+                "memory_pressure": float(mem_pressure)
+                if mem_pressure is not None
+                else math.nan,
+            }
+        )
+
+    correlations: List[Tuple[str, float]] = []
+    for key, pairs in feature_points.items():
+        corr = _pearson_corr(pairs)
+        if corr is None:
+            continue
+        correlations.append((key, corr))
+    if correlations:
+        correlations.sort(key=lambda item: abs(item[1]), reverse=True)
+
+    top_offcpu = sorted(
+        (
+            (pid, total_ns / 1_000_000.0)
+            for pid, total_ns in system_data.total_offcpu_ns.items()
+            if total_ns > 0
+        ),
+        key=lambda item: item[1],
+        reverse=True,
+    )[:10]
+    top_pagefaults = sorted(
+        (
+            (pid, count)
+            for pid, count in system_data.total_page_faults.items()
+            if count > 0
+        ),
+        key=lambda item: item[1],
+        reverse=True,
+    )[:10]
+
+    return {
+        "correlations": correlations,
+        "time_series": time_series,
+        "top_offcpu": top_offcpu,
+        "top_pagefaults": top_pagefaults,
+        "aligned_pairs": len(time_series),
+    }
 
 
 def _prepare_stats() -> Dict[int, DeviceStats]:
@@ -251,7 +576,9 @@ def _prepare_stats() -> Dict[int, DeviceStats]:
 
 
 def _collect_stats(
-    snapshot: Dict[str, object], devices: Dict[int, DeviceStats]
+    snapshot: Dict[str, object],
+    devices: Dict[int, DeviceStats],
+    global_latencies: List[LatencySnapshot],
 ) -> None:
     # Ensure we always work with lists of dicts for type-checkers and safety
     raw_latency = snapshot.get("latency_histogram")
@@ -286,6 +613,9 @@ def _collect_stats(
             count = 0
         queue_depths[device_id] = count
 
+    combined_buckets: Dict[int, int] = {}
+    combined_total = 0
+
     for raw in latency_entries:
         if not isinstance(raw, dict):
             continue
@@ -315,6 +645,9 @@ def _collect_stats(
                 )
             )
         devices_in_snapshot.add(device_id)
+        combined_total += total_requests
+        for slot, value in snapshot_buckets.items():
+            combined_buckets[slot] = combined_buckets.get(slot, 0) + value
 
     for raw in inflight_entries:
         if not isinstance(raw, dict):
@@ -331,6 +664,17 @@ def _collect_stats(
         devices[device_id].register_queue_depth(depth)
         if not math.isnan(timestamp):
             devices[device_id].queue_series.append((timestamp, depth))
+    if not math.isnan(timestamp) and combined_buckets:
+        if combined_total <= 0:
+            combined_total = sum(combined_buckets.values())
+        global_latencies.append(
+            LatencySnapshot(
+                timestamp=timestamp,
+                interval_s=interval_s,
+                total_requests=combined_total,
+                bucket_counts=combined_buckets,
+            )
+        )
 
 
 def _format_latency_summary(stats: DeviceStats, percentiles: List[float]) -> str:
@@ -366,6 +710,7 @@ def _generate_charts(
     charts_dir: Path,
     percentiles: List[float],
     enabled_charts: Set[str],
+    importance_payload: Optional[Dict[str, object]] = None,
 ) -> None:
     try:
         import matplotlib.pyplot as plt
@@ -636,6 +981,160 @@ def _generate_charts(
                 )
                 plt.close(fig)
 
+    if "importance" in enabled_charts and importance_payload:
+        LABELS = {
+            "off_cpu_ms": "Tiempo off-CPU (ms)",
+            "page_faults_per_s": "Fallos de página /s",
+            "cpu_pressure": "PSI CPU (avg)",
+            "io_pressure": "PSI I/O (avg)",
+            "memory_pressure": "PSI Memoria (avg)",
+        }
+        correlations = importance_payload.get("correlations", [])
+        if correlations:
+            names = [LABELS.get(key, key) for key, _ in correlations]
+            values = [corr for _, corr in correlations]
+            fig, ax = plt.subplots(figsize=(8, 4))
+            colors = ["#1f77b4" if val >= 0 else "#d62728" for val in values]
+            ax.bar(range(len(values)), values, color=colors, alpha=0.8)
+            ax.set_xticks(range(len(values)))
+            ax.set_xticklabels(names, rotation=30, ha="right", fontsize=9)
+            ax.set_ylabel("Correlación (Pearson)")
+            aligned_pairs = importance_payload.get("aligned_pairs", 0)
+            ax.set_title(
+                f"Importancia relativa vs latencia (pares alineados: {aligned_pairs})"
+            )
+            ax.axhline(0, color="black", linewidth=0.8)
+            ax.set_ylim(-1.0, 1.0)
+            ax.grid(True, axis="y", alpha=0.2)
+            fig.tight_layout()
+            fig.savefig(
+                charts_dir / "importance_correlations.png",
+                dpi=150,
+                bbox_inches="tight",
+            )
+            plt.close(fig)
+
+        top_offcpu = importance_payload.get("top_offcpu", [])
+        if top_offcpu:
+            pids = [pid for pid, _ in top_offcpu]
+            values_ms = [value for _, value in top_offcpu]
+            fig, ax = plt.subplots(figsize=(8, 4.5))
+            ax.barh(range(len(values_ms)), values_ms, color="#9467bd")
+            ax.set_yticks(range(len(values_ms)))
+            ax.set_yticklabels(pids, fontsize=9)
+            ax.set_xlabel("Tiempo acumulado fuera de CPU (ms)")
+            ax.set_title("PIDs con mayor tiempo off-CPU")
+            ax.grid(True, axis="x", alpha=0.2)
+            fig.tight_layout()
+            fig.savefig(
+                charts_dir / "importance_offcpu_top_pids.png",
+                dpi=150,
+                bbox_inches="tight",
+            )
+            plt.close(fig)
+
+        top_pagefaults = importance_payload.get("top_pagefaults", [])
+        if top_pagefaults:
+            pids = [pid for pid, _ in top_pagefaults]
+            values_pf = [value for _, value in top_pagefaults]
+            fig, ax = plt.subplots(figsize=(8, 4.5))
+            ax.barh(range(len(values_pf)), values_pf, color="#ff7f0e")
+            ax.set_yticks(range(len(values_pf)))
+            ax.set_yticklabels(pids, fontsize=9)
+            ax.set_xlabel("Fallos de página acumulados")
+            ax.set_title("PIDs con más fallos de página")
+            ax.grid(True, axis="x", alpha=0.2)
+            fig.tight_layout()
+            fig.savefig(
+                charts_dir / "importance_page_faults_top_pids.png",
+                dpi=150,
+                bbox_inches="tight",
+            )
+            plt.close(fig)
+
+        time_series = importance_payload.get("time_series", [])
+        if time_series:
+            times = [entry.get("time", 0.0) for entry in time_series]
+            latency_values = [entry.get("latency_us", math.nan) for entry in time_series]
+            offcpu_values = [entry.get("off_cpu_ms", math.nan) for entry in time_series]
+            pf_values = [
+                entry.get("page_faults_per_s", math.nan) for entry in time_series
+            ]
+            cpu_pressure_values = [
+                entry.get("cpu_pressure", math.nan) for entry in time_series
+            ]
+            io_pressure_values = [
+                entry.get("io_pressure", math.nan) for entry in time_series
+            ]
+            mem_pressure_values = [
+                entry.get("memory_pressure", math.nan) for entry in time_series
+            ]
+
+            def _normalize(series: List[float]) -> List[float]:
+                finite = [value for value in series if not math.isnan(value)]
+                if not finite:
+                    return [math.nan for _ in series]
+                min_v = min(finite)
+                max_v = max(finite)
+                if math.isclose(max_v, min_v):
+                    return [0.5 for _ in series]
+                return [
+                    (value - min_v) / (max_v - min_v) if not math.isnan(value) else math.nan
+                    for value in series
+                ]
+
+            latency_norm = _normalize(latency_values)
+            offcpu_norm = _normalize(offcpu_values)
+            pf_norm = _normalize(pf_values)
+            cpu_pressure_norm = _normalize(cpu_pressure_values)
+            io_pressure_norm = _normalize(io_pressure_values)
+            mem_pressure_norm = _normalize(mem_pressure_values)
+
+            fig, ax = plt.subplots(figsize=(10, 4.5))
+            ax.plot(times, latency_norm, label="Latencia (normalizada)", linewidth=1.8)
+            ax.plot(times, offcpu_norm, label="Off-CPU ms (norm)", linewidth=1.2)
+            ax.plot(
+                times,
+                pf_norm,
+                label="Fallos de página/s (norm)",
+                linewidth=1.2,
+                linestyle="--",
+            )
+            ax.plot(
+                times,
+                cpu_pressure_norm,
+                label="PSI CPU (norm)",
+                linewidth=1.0,
+                linestyle=":",
+            )
+            ax.plot(
+                times,
+                io_pressure_norm,
+                label="PSI I/O (norm)",
+                linewidth=1.0,
+                linestyle="-.",
+            )
+            ax.plot(
+                times,
+                mem_pressure_norm,
+                label="PSI Memoria (norm)",
+                linewidth=1.0,
+                linestyle="--",
+                alpha=0.8,
+            )
+            ax.set_xlabel("Tiempo desde el inicio (s)")
+            ax.set_ylabel("Escala normalizada (0-1)")
+            ax.set_title("Tendencias normalizadas de recursos vs latencia")
+            ax.grid(True, alpha=0.2)
+            ax.legend(loc="upper right", ncol=2, fontsize=8)
+            fig.tight_layout()
+            fig.savefig(
+                charts_dir / "importance_trends.png",
+                dpi=150,
+                bbox_inches="tight",
+            )
+            plt.close(fig)
+
 
 def main() -> None:
     args = _parse_args()
@@ -651,17 +1150,40 @@ def main() -> None:
     percentiles = _load_percentiles(args.percentiles)
     chart_types = _parse_chart_types(args.chart_types)
     devices: Dict[int, DeviceStats] = _prepare_stats()
+    global_snapshots: List[LatencySnapshot] = []
     snapshots = 0
 
     for snapshot in _read_snapshots(args.input):
         if not isinstance(snapshot, dict):
             continue
-        _collect_stats(snapshot, devices)
+        _collect_stats(snapshot, devices, global_snapshots)
         snapshots += 1
 
     if snapshots == 0:
         print("No se encontraron snapshots en el archivo.")
         return
+
+    system_metrics_data = None
+    importance_payload = None
+    if args.system_metrics:
+        system_metrics_data = _read_system_metrics(args.system_metrics)
+        importance_payload = _compute_importance_payload(
+            global_snapshots, system_metrics_data, percentiles
+        )
+        if args.system_metrics.exists() and system_metrics_data is None:
+            print(
+                f"Advertencia: no se pudieron leer snapshots de {args.system_metrics}.",
+                file=sys.stderr,
+            )
+        if (
+            not importance_payload
+            and args.system_metrics.exists()
+            and "importance" in chart_types
+        ):
+            print(
+                "Advertencia: no se generaron gráficas de importancia (no hay datos alineados suficientes).",
+                file=sys.stderr,
+            )
 
     sorted_devices = sorted(
         devices.items(),
@@ -683,7 +1205,13 @@ def main() -> None:
         print()
 
     if not args.no_charts:
-        _generate_charts(devices, args.charts_dir, percentiles, chart_types)
+        _generate_charts(
+            devices,
+            args.charts_dir,
+            percentiles,
+            chart_types,
+            importance_payload,
+        )
         print(f"Gráficas exportadas a: {args.charts_dir}")
 
 
