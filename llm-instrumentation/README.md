@@ -167,6 +167,38 @@ See **`docs/BLOCK_IO_TRACEPOINTS.md`** for:
 - Performance characteristics
 - Advanced customization
 
+## CPU & Memory Metrics
+
+### Overview
+
+- **`scripts/system_metrics.py`**: Engancha tracepoints `exceptions:page_fault_user` y `sched:sched_switch` para capturar fallos de página por PID, tiempo fuera de CPU y presión PSI de CPU/I/O/memoria.
+- Se ejecuta como root y persiste snapshots JSONL con los campos `off_cpu_ns`, `page_faults` y `pressure` cada `N` segundos.
+- La salida complementa los histogramas de latencia/colas producidos por `tracepoints.py` para correlacionar latencia de servicio con contención de CPU, swapping y presión sistémica.
+
+### Quick Start
+
+```bash
+sudo python3 scripts/system_metrics.py --interval 5 --output system_metrics.jsonl
+```
+
+Cada línea JSON incluye `timestamp`, `iso_timestamp`, `interval_s`, un mapa `off_cpu_ns` (PID → nanosegundos fuera de CPU), `page_faults` (PID → fallos de página de usuario) y la estructura `pressure` con métricas PSI para CPU, I/O y memoria.
+
+Para ver las muestras sólo por pantalla añade `--no-output`. Usa `--flush-every` y `--fsync` para controlar el flushing asíncrono en disco.
+
+### CLI Options
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--interval` | Intervalo entre snapshots (s) | 5.0 |
+| `--output` | Archivo JSONL de salida | `system_metrics.jsonl` |
+| `--no-output` | Deshabilita escritura a disco | False |
+| `--flush-every` | Snapshots por flush | 12 |
+| `--fsync` | Forzar fsync tras cada flush | False |
+
+### Correlación
+
+Combina `system_metrics.jsonl` y `tracepoints.jsonl` con `scripts/analyze_tracepoints.py` o cargas personalizadas en pandas para atribuir latencia a contención de CPU, fallos de página, presión PSI o I/O de disco.
+
 ## Development
 
 - Tests: `pytest -q` in repo root or the package directory.
