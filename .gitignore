@@ -196,3 +196,8 @@ cython_debug/
 #Ignore vscode AI rules
 .github/instructions/codacy.instructions.md
 .codacy/codacy.yaml
+/benchmarks
+AGENTS.md
+test_output.bin
+tracepoints.jsonl
+.gitignore
