@@ -5,7 +5,10 @@ A high-performance instrumentation framework for capturing, streaming, and analy
 internal activations of large language models (LLMs).
 """
 
-from llm_instrumentation.core.framework import InstrumentationFramework
+from llm_instrumentation.core.framework import (
+    InstrumentationFramework,
+    analyze_activations_with_tokens,
+)
 from llm_instrumentation.core.config import InstrumentationConfig
 from llm_instrumentation.core.hooks import HookGranularity, HookConfig
 from llm_instrumentation.core.streaming import StreamingSerializer
@@ -20,5 +23,6 @@ __all__ = [
     "HookConfig",
     "StreamingSerializer",
     "TensorCompressionManager",
+    "analyze_activations_with_tokens",
     "__version__",
 ]

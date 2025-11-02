@@ -10,6 +10,61 @@ from .hooks import HookConfig, HookGranularity, OptimizedHookManager, TensorProc
 from .streaming import StreamingSerializer
 
 
+class _TokenBoundaryTracker:
+    """Tracks token boundaries during generation without impacting streaming pipeline.
+
+    This tracker operates outside the critical compression/streaming path to avoid
+    performance overhead. Token metadata is stored in memory and flushed to JSON
+    at the end of capture.
+    """
+
+    def __init__(self):
+        self.tokens: list = []
+        self.start_time: float = 0.0
+
+    def record_token(self, token_id: int, token_text: str, position: int = None):
+        """Record a generated token with its metadata.
+
+        Args:
+            token_id: The token ID from the vocabulary
+            token_text: The decoded token text
+            position: Optional sequence position (auto-computed if None)
+        """
+        if position is None:
+            position = len(self.tokens)
+
+        self.tokens.append(
+            {
+                "token_index": position,
+                "token_id": int(token_id),
+                "token_text": token_text,
+            }
+        )
+
+    def save(self, path: str):
+        """Save token metadata to JSON file."""
+        import json
+        import time
+
+        metadata = {
+            "total_tokens": len(self.tokens),
+            "tokens": self.tokens,
+            "capture_duration_seconds": time.time() - self.start_time if self.start_time else 0,
+        }
+
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(metadata, f, indent=2, ensure_ascii=False)
+
+    def __enter__(self):
+        import time
+
+        self.start_time = time.time()
+        return self
+
+    def __exit__(self, *args):
+        pass
+
+
 class InstrumentationFramework:
     """Main framework for instrumenting and monitoring LLM models."""
 
@@ -44,8 +99,31 @@ class InstrumentationFramework:
         self._models[model_id] = model
 
     @contextmanager
-    def capture_activations(self, output_path: str):
-        """Context manager for capturing model activations to a stream file."""
+    def capture_activations(self, output_path: str, track_per_token: bool = False):
+        """Context manager for capturing model activations to a stream file.
+
+        Args:
+            output_path: Path to save the activation stream
+            track_per_token: If True, enables per-token tracking and saves metadata
+                            to {output_path}_tokens.json. Use for reasoning analysis.
+
+        Yields:
+            Optional[_TokenBoundaryTracker]: Tracker object if track_per_token=True,
+                                             None otherwise
+
+        Example:
+            # Standard usage (no tracking)
+            with framework.capture_activations("output.stream"):
+                outputs = model.generate(...)
+
+            # Per-token tracking for reasoning models
+            with framework.capture_activations("output.stream", track_per_token=True) as tracker:
+                for step in range(max_tokens):
+                    outputs = model(input_ids)
+                    next_token = outputs.logits[:, -1, :].argmax(dim=-1)
+                    tracker.record_token(next_token.item(), tokenizer.decode(next_token))
+                    input_ids = torch.cat([input_ids, next_token.unsqueeze(0)], dim=-1)
+        """
         # Prepare async event loop and serializer
         loop = self._ensure_event_loop()
         self._serializer = StreamingSerializer(
@@ -57,6 +135,11 @@ class InstrumentationFramework:
             self._serializer.start_streaming(output_path), loop
         )
         fut_start.result()  # block until streaming is ready
+
+        # Create token tracker if requested
+        token_tracker = _TokenBoundaryTracker() if track_per_token else None
+        if token_tracker:
+            token_tracker.__enter__()
 
         # Create a TensorProcessor that enqueues tensors to the serializer
         processor = _StreamingTensorProcessor(self._serializer, loop)
@@ -74,7 +157,7 @@ class InstrumentationFramework:
 
         self._active_captures[output_path] = True
         try:
-            yield
+            yield token_tracker
         finally:
             # Detach hooks first to stop new enqueueing
             if self._hook_manager:
@@ -87,15 +170,21 @@ class InstrumentationFramework:
                 )
                 fut_stop.result()
 
-            self._active_captures[output_path] = False
+        self._active_captures[output_path] = False
 
-            # Optionally stop loop if no other captures are active
-            if self._loop and self._loop_thread:
-                self._loop.call_soon_threadsafe(self._loop.stop)
-                self._loop_thread.join(timeout=5)
-                self._loop = None
-                self._loop_thread = None
-                self._serializer = None
+        # Save token metadata if tracking was enabled
+        if token_tracker and track_per_token:
+            metadata_path = output_path.replace(".stream", "_tokens.json")
+            token_tracker.save(metadata_path)
+            token_tracker.__exit__(None, None, None)
+
+        # Optionally stop loop if no other captures are active
+        if self._loop and self._loop_thread:
+            self._loop.call_soon_threadsafe(self._loop.stop)
+            self._loop_thread.join(timeout=5)
+            self._loop = None
+            self._loop_thread = None
+            self._serializer = None
 
     def analyze_activations(self, stream_path: str) -> Dict[str, Any]:
         """Analyze captured activations from a stream.
@@ -103,6 +192,9 @@ class InstrumentationFramework:
         Parses the stream format described in docs/STREAM_FORMAT.md and
         returns lightweight metadata useful for downstream analysis, such as
         packet counts, per-layer payload sizes, and aggregate totals.
+
+        Note: If token tracking was enabled during capture, load the corresponding
+        *_tokens.json file to correlate packets with specific generated tokens.
         """
         import os
         import struct
@@ -169,3 +261,33 @@ class _StreamingTensorProcessor(TensorProcessor):
             # If loop/serializer is not available, drop silently
             pass
         return b""
+
+
+def analyze_activations_with_tokens(stream_path: str, framework: InstrumentationFramework) -> Dict[str, Any]:
+    """Analyze activations and load associated token metadata if available.
+
+    Args:
+        stream_path: Path to the .stream file
+        framework: InstrumentationFramework instance used for capture
+
+    Returns:
+        Dictionary with activation analysis + 'token_metadata' key if available
+    """
+    import json
+    import os
+
+    analysis = framework.analyze_activations(stream_path)
+
+    metadata_path = stream_path.replace(".stream", "_tokens.json")
+    if os.path.exists(metadata_path):
+        with open(metadata_path, "r", encoding="utf-8") as f:
+            token_metadata = json.load(f)
+
+        analysis["token_metadata"] = token_metadata
+
+        num_tokens = token_metadata["total_tokens"]
+        if num_tokens > 0 and analysis["packets"] > 0:
+            analysis["packets_per_token"] = analysis["packets"] / num_tokens
+            analysis["bytes_per_token"] = analysis["total_compressed_bytes"] / num_tokens
+
+    return analysis
