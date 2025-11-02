@@ -1,22 +1,95 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "llm_instrumentation"
-version = "0.0.1"
+name = "llm-instrumentation"
+version = "0.1.0"
 authors = [
-  { name="Ruben", email="rubenfernandezboullon@gmail.com" },
+  { name="Ruben Fernandez Boullon", email="rubenfernandezboullon@gmail.com" },
 ]
-description = "A high-performance instrumentation framework for large language model interpretability."
+description = "A high-performance instrumentation framework for capturing, streaming, and analyzing internal activations of large language models"
 readme = "README.md"
 requires-python = ">=3.8"
+license = { text = "MIT" }
+keywords = ["llm", "instrumentation", "interpretability", "pytorch", "transformers", "profiling"]
 classifiers = [
-    "Programming Language :: Python :: 3",
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
-    "Operating System :: OS Independent",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: System :: Monitoring",
+]
+
+dependencies = [
+    "torch>=2.0.0",
+    "transformers>=4.30.0",
+    "numpy>=1.24.0",
+    "lz4>=4.0.0",
+    "zstandard>=0.20.0",
+    "aiofiles>=23.0.0",
+    "psutil>=5.9.0",
+    "networkx>=3.0",
+    "matplotlib>=3.5.0",
+    "jupyter>=1.0.0",
+    "ipython>=8.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=23.0.0",
+    "flake8>=6.0.0",
+    "mypy>=1.0.0",
+]
+ebpf = [
+    "bcc>=0.1.0",
+]
+all = [
+    "llm-instrumentation[dev,ebpf]",
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/your-username/llm-instrumentation"
-"Bug Tracker" = "https://github.com/your-username/llm-instrumentation/issues"
+Homepage = "https://github.com/rubenfb23/STRAP-LLM"
+Repository = "https://github.com/rubenfb23/STRAP-LLM"
+"Bug Tracker" = "https://github.com/rubenfb23/STRAP-LLM/issues"
+Documentation = "https://github.com/rubenfb23/STRAP-LLM/tree/main/llm-instrumentation/docs"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["llm_instrumentation*"]
+exclude = ["tests*"]
+
+[tool.setuptools.package-data]
+llm_instrumentation = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"
+
+[tool.black]
+line-length = 100
+target-version = ["py38", "py39", "py310", "py311", "py312"]
+include = '\.pyi?$'
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
