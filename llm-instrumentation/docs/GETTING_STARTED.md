@@ -81,6 +81,28 @@ analysis_results = framework.analyze_activations("output.stream")
 
 For a demonstration of the analysis and interpretability features, please see `examples/interpretability_demo.py`.
 
+## Optional: Per-token Tracking
+
+You can enable per-token boundary tracking for generation workloads. This is opt-in and does not affect the streaming hot path.
+
+```python
+from llm_instrumentation import analyze_activations_with_tokens
+
+with framework.capture_activations("gen.stream", track_per_token=True) as tracker:
+    ids = input_ids
+    for _ in range(64):
+        with torch.no_grad():
+            out = model(ids)
+            next_tok = out.logits[:, -1, :].argmax(dim=-1, keepdim=True)
+        tracker.record_token(next_tok[0].item(), tokenizer.decode(next_tok[0]))
+        ids = torch.cat([ids, next_tok], dim=-1)
+        if next_tok[0].item() == tokenizer.eos_token_id:
+            break
+
+analysis = analyze_activations_with_tokens("gen.stream", framework)
+print("packets per token:", analysis.get("packets_per_token"))
+```
+
 Notes
 
 - If you are prototyping CPU-only or want to avoid compression cost, start with `compression_algorithm="none"`.

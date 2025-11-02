@@ -27,6 +27,7 @@ pip install -e .
 ## Quick Usage
 
 ```python
+import torch
 from llm_instrumentation import (
     InstrumentationFramework,
     InstrumentationConfig,
@@ -50,6 +51,28 @@ with framework.capture_activations("output.stream"):
     _ = model(torch.randint(0, 100, (1, 16)))
 
 analysis = framework.analyze_activations("output.stream")
+
+## Per-token Tracking (opt-in)
+
+Enable lightweight token boundary tracking without affecting the compression/streaming pipeline. Token metadata is stored in memory and saved to `{output_path}_tokens.json` on context exit.
+
+```python
+from llm_instrumentation import analyze_activations_with_tokens
+
+with framework.capture_activations("gen.stream", track_per_token=True) as tracker:
+    ids = torch.randint(0, 100, (1, 8))
+    for _ in range(32):
+        with torch.no_grad():
+            out = model(ids)
+            next_tok = out.logits[:, -1, :].argmax(dim=-1, keepdim=True)
+        tracker.record_token(next_tok[0].item(), tokenizer.decode(next_tok[0]))
+        ids = torch.cat([ids, next_tok], dim=-1)
+        if next_tok[0].item() == tokenizer.eos_token_id:
+            break
+
+analysis = analyze_activations_with_tokens("gen.stream", framework)
+print("bytes_per_token:", analysis.get("bytes_per_token"))
+```
 ```
 
 ## Configuration

@@ -45,6 +45,23 @@ fw.instrument_model(model)
 inputs = tok.encode("The future of AI is", return_tensors="pt")
 with fw.capture_activations("output.stream"):
     _ = model.generate(inputs, max_length=64)
+
+# Optional: per-token tracking (opt-in)
+# Saves token metadata to "output_tokens.json" and keeps streaming path unchanged.
+import torch
+from llm_instrumentation import analyze_activations_with_tokens
+with fw.capture_activations("output_tokens.stream", track_per_token=True) as tracker:
+    next_ids = inputs
+    for _ in range(16):
+        out = model(next_ids)
+        next_token = out.logits[:, -1, :].argmax(dim=-1, keepdim=True)
+        tracker.record_token(next_token[0].item(), tok.decode(next_token[0]))
+        next_ids = torch.cat([next_ids, next_token], dim=-1)
+        if next_token[0].item() == tok.eos_token_id:
+            break
+
+analysis_tokens = analyze_activations_with_tokens("output_tokens.stream", fw)
+print("packets_per_token:", analysis_tokens.get("packets_per_token"))
 ```
 
 3) Inspect stream

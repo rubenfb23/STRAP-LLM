@@ -45,19 +45,36 @@ Instruments the given PyTorch model by attaching hooks to the specified layers.
 
 - `model` (`torch.nn.Module`): The model to instrument.
 
-### `capture_activations(self, output_path: str) -> ContextManager`
+### `capture_activations(self, output_path: str, track_per_token: bool = False) -> ContextManager[Optional[_TokenBoundaryTracker]]`
 
 A context manager that captures activations during inference and saves them to the specified file.
 
+When `track_per_token=True`, an in-memory token tracker is returned and token metadata is saved to `{output_path}_tokens.json` at exit. The token tracker operates outside the hot compression/streaming path and does not impact performance.
+
 **Parameters:**
 
-- `output_path` (`str`): The path to the file where the captured activations will be saved.
+- `output_path` (`str`): Path to the `.stream` file where activations are saved.
+- `track_per_token` (`bool`, default `False`): Enable per-token boundary tracking.
 
-**Example:**
+**Yields:**
+
+- `None` if `track_per_token=False`, otherwise a `_TokenBoundaryTracker` with `record_token(token_id: int, token_text: str, position: Optional[int] = None)`.
+
+**Examples:**
 
 ```python
+# Standard usage
 with framework.capture_activations("output.stream"):
-    outputs = model.generate(input_ids, max_length=100)
+    _ = model.generate(input_ids, max_length=100)
+
+# Per-token tracking usage
+with framework.capture_activations("gen.stream", track_per_token=True) as tracker:
+    ids = input_ids
+    for _ in range(64):
+        out = model(ids)
+        next_tok = out.logits[:, -1, :].argmax(dim=-1, keepdim=True)
+        tracker.record_token(next_tok[0].item(), tokenizer.decode(next_tok[0]))
+        ids = torch.cat([ids, next_tok], dim=-1)
 ```
 
 ### `analyze_activations(self, data_path: str) -> dict`
@@ -68,6 +85,21 @@ Loads captured activation data from a file and returns an analysis object.
 
 - `data_path` (`str`): The path to the file containing the captured activations.
 
+If token tracking was enabled during capture, load the adjacent `*_tokens.json` to correlate packets with tokens.
+
 **Returns:**
 
-- `dict`: A dictionary with metadata and analysis placeholders. Causal graphs and SAE features are planned.
+- `dict`: A dictionary with keys like `packets`, `total_compressed_bytes`, `per_layer`, and others.
+
+### `analyze_activations_with_tokens(stream_path: str, framework: InstrumentationFramework) -> dict`
+
+Convenience helper that runs `analyze_activations` and, if present, loads `{stream_path}_tokens.json` to enrich the result with `token_metadata`, `packets_per_token`, and `bytes_per_token`.
+
+**Parameters:**
+
+- `stream_path` (`str`): Path to the `.stream` file.
+- `framework` (`InstrumentationFramework`): Framework instance used for capture.
+
+**Returns:**
+
+- `dict`: Analysis dictionary with optional `token_metadata`, `packets_per_token`, `bytes_per_token`.
