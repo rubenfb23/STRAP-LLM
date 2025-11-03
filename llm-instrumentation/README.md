@@ -8,6 +8,7 @@ A high-performance instrumentation framework for LLM interpretability and observ
 - **Data rate**: Sustain ≥ 2 GB/s activation streaming to disk.
 - **Compression**: Achieve ≥ 3× reduction with lossy error < 1e-3 when enabled.
 - **Memory**: Keep host RAM usage ≤ 24 GB with backpressure and buffering.
+- **Resilience**: Automatic checkpoints safeguard long generations from data loss.
 
 ## Stack
 
@@ -38,9 +39,9 @@ with capture_activations(model, preset="balanced", output_path="output.stream") 
 
 analysis = framework.analyze_activations("output.stream")
 
-## Per-token Tracking (opt-in)
+## Per-token Tracking & Checkpointing (opt-in)
 
-Enable lightweight token boundary tracking without affecting the compression/streaming pipeline. Token metadata is stored in memory and saved to `{output_path}_tokens.json` on context exit.
+Enable lightweight token boundary tracking without affecting the compression/streaming pipeline. Token metadata is stored in memory and saved to `{output_path}_tokens.json` on context exit. Optional checkpoints persist snapshots every _N_ tokens to make long streaming sessions resumable.
 
 ```python
 from llm_instrumentation import analyze_activations_with_tokens
@@ -58,8 +59,26 @@ with framework.capture_activations("gen.stream", track_per_token=True) as tracke
 
 analysis = analyze_activations_with_tokens("gen.stream", framework)
 print("bytes_per_token:", analysis.get("bytes_per_token"))
+
+# Persist checkpoints every 64 tokens to allow resuming long captures.
+with framework.capture_activations(
+    "gen.stream",
+    track_per_token=True,
+    checkpoint_interval_tokens=64,
+) as tracker:
+    ...
+
+# Resume the same capture later (appends to the existing stream file).
+with framework.capture_activations(
+    "gen.stream",
+    track_per_token=True,
+    checkpoint_interval_tokens=64,
+    resume_from_checkpoint=True,
+) as tracker:
+    ...
 ```
-```
+
+Checkpoint files default to `{output_path}.ckpt.json`; override with `checkpoint_path` to control placement. Successful captures clean up checkpoints after flushing token metadata.
 
 ## Configuration
 

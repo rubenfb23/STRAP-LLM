@@ -93,12 +93,39 @@ with framework.capture_activations("gen.stream", track_per_token=True) as tracke
 
 analysis = analyze_activations_with_tokens("gen.stream", framework)
 print("packets per token:", analysis.get("packets_per_token"))
+
+# Add checkpointing to safeguard long generations and enable resume.
+with framework.capture_activations(
+    "gen.stream",
+    track_per_token=True,
+    checkpoint_interval_tokens=128,
+) as tracker:
+    ...
+
+# Resume later; tokens and stream data append seamlessly.
+with framework.capture_activations(
+    "gen.stream",
+    track_per_token=True,
+    checkpoint_interval_tokens=128,
+    resume_from_checkpoint=True,
+) as tracker:
+    ...
+
+# Store checkpoints somewhere else if desired.
+with framework.capture_activations(
+    "gen.stream",
+    track_per_token=True,
+    checkpoint_interval_tokens=128,
+    checkpoint_path="tmp/ckpt.json",
+) as tracker:
+    ...
 ```
 
 Notes
 
 - If you are prototyping CPU-only or want to avoid compression cost, start with `compression_algorithm="none"`.
 - Use a smaller model locally to validate the capture path before scaling.
+- Checkpoints default to `{output_path}.ckpt.json` and are cleaned up automatically once the run finishes successfully.
 
 ## Further Examples
 

@@ -9,6 +9,7 @@ The core `llm-instrumentation` library instruments PyTorch transformer models, s
 - **E2E capture**: Hook → async queue → compression → ring buffer → async writer.
 - **Hook granularity**: `FULL_TENSOR`, `SAMPLED_SLICES`, `ATTENTION_ONLY`, `MLP_ONLY`.
 - **Compression**: `lz4`, `zstd`, and `none` with FP16 downcast before serialization.
+- **Checkpointing**: Incremental per-token snapshots and resume support for long captures.
 - **Throughput-first**: Background asyncio loop and thread pool, headered packets, zero-copy buffer handoffs where possible.
 - **Analysis-ready**: Stream format is documented and stable for offline parsing.
 
@@ -53,7 +54,26 @@ with fw.capture_activations("output_tokens.stream", track_per_token=True) as tra
 
 analysis_tokens = analyze_activations_with_tokens("output_tokens.stream", fw)
 print("packets_per_token:", analysis_tokens.get("packets_per_token"))
+
+# Automatic checkpointing for long generations (resume-friendly)
+with fw.capture_activations(
+    "session.stream",
+    track_per_token=True,
+    checkpoint_interval_tokens=64,
+) as tracker:
+    ...
+
+# Resume later using the persisted checkpoint file
+with fw.capture_activations(
+    "session.stream",
+    track_per_token=True,
+    checkpoint_interval_tokens=64,
+    resume_from_checkpoint=True,
+) as tracker:
+    ...
 ```
+
+Checkpoint metadata is stored alongside the stream as `session.stream.ckpt.json` and is cleaned up automatically after a successful capture. Pass `checkpoint_path="custom.json"` to control the location.
 
 Presets return mutable `InstrumentationConfig` objects so you can chain overrides: `InstrumentationConfig.balanced().with_compression("zstd").with_memory_limit(16)`.
 

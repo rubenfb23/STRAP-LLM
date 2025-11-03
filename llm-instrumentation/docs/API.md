@@ -45,7 +45,7 @@ Instruments the given PyTorch model by attaching hooks to the specified layers.
 
 - `model` (`torch.nn.Module`): The model to instrument.
 
-### `capture_activations(self, output_path: str, track_per_token: bool = False) -> ContextManager[Optional[_TokenBoundaryTracker]]`
+### `capture_activations(self, output_path: str, track_per_token: bool = False, checkpoint_interval_tokens: Optional[int] = None, checkpoint_path: Optional[str] = None, resume_from_checkpoint: bool = False) -> ContextManager[Optional[_TokenBoundaryTracker]]`
 
 A context manager that captures activations during inference and saves them to the specified file.
 
@@ -55,6 +55,11 @@ When `track_per_token=True`, an in-memory token tracker is returned and token me
 
 - `output_path` (`str`): Path to the `.stream` file where activations are saved.
 - `track_per_token` (`bool`, default `False`): Enable per-token boundary tracking.
+- `checkpoint_interval_tokens` (`int | None`, default `None`): Persist token checkpoints every _N_ tokens. Requires `track_per_token=True`.
+- `checkpoint_path` (`str | None`, default `None`): Optional explicit path for the checkpoint JSON file. Defaults to `{output_path}.ckpt.json`.
+- `resume_from_checkpoint` (`bool`, default `False`): Resume from an existing checkpoint, appending to `output_path` and hydrating prior tokens. Requires `track_per_token=True`.
+
+Using checkpoint settings without enabling `track_per_token` raises `ValueError`.
 
 **Yields:**
 
@@ -75,6 +80,15 @@ with framework.capture_activations("gen.stream", track_per_token=True) as tracke
         next_tok = out.logits[:, -1, :].argmax(dim=-1, keepdim=True)
         tracker.record_token(next_tok[0].item(), tokenizer.decode(next_tok[0]))
         ids = torch.cat([ids, next_tok], dim=-1)
+
+# Enable checkpoints every 128 tokens and resume from a prior run.
+with framework.capture_activations(
+    "long-run.stream",
+    track_per_token=True,
+    checkpoint_interval_tokens=128,
+    resume_from_checkpoint=True,
+) as tracker:
+    ...
 ```
 
 ### `analyze_activations(self, data_path: str) -> dict`
