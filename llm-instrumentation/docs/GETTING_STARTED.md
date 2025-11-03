@@ -21,34 +21,26 @@ This will create a `venv` directory in `llm-instrumentation` and install the pac
 The core functionality of the framework is to instrument a language model and capture its internal activations during inference. Here is a basic example of how to do this:
 
 ```python
-from llm_instrumentation import (
-    InstrumentationFramework,
-    InstrumentationConfig,
-    HookGranularity,
-)
+from llm_instrumentation import InstrumentationConfig, capture_activations
 from transformers import AutoModelForCausalLM
 
 # Load a pre-trained model
 model = AutoModelForCausalLM.from_pretrained("meta-llama/Llama-2-7b-hf")
 
-# Configure the instrumentation settings
-config = InstrumentationConfig(
-    granularity=HookGranularity.ATTENTION_ONLY,
-    compression_algorithm="lz4",  # or "zstd" or "none"
-    target_throughput_gbps=2.0,
-    max_memory_gb=24,
-)
-
-# Initialize and instrument
-framework = InstrumentationFramework(config)
-framework.instrument_model(model)
-
 # Run inference and capture the activations to a file
-with framework.capture_activations("output.stream"):
+with capture_activations(model, preset="balanced", output_path="output.stream") as framework:
     input_ids = ...  # Prepare your input tensors
     outputs = model.generate(input_ids, max_length=100)
 
 # The captured data is now in "output.stream"
+```
+
+The helper defaults to the `balanced` preset, but you can pick any preset (`fast_capture`, `max_compression`, `attention_analysis`, `mlp_analysis`) or supply a custom configuration. Presets return regular `InstrumentationConfig` objects, so you can chain overrides fluently:
+
+```python
+custom = InstrumentationConfig.balanced().with_compression("zstd").with_memory_limit(16)
+with capture_activations(model, config=custom, output_path="custom.stream"):
+    ...
 ```
 
 For a complete, runnable example, see `examples/basic_usage.py`.

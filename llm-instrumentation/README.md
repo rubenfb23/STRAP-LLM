@@ -28,26 +28,12 @@ pip install -e .
 
 ```python
 import torch
-from llm_instrumentation import (
-    InstrumentationFramework,
-    InstrumentationConfig,
-    HookGranularity,
-)
+from llm_instrumentation import capture_activations
 from transformers import AutoModelForCausalLM
 
 model = AutoModelForCausalLM.from_pretrained("meta-llama/Llama-2-7b-hf")
 
-config = InstrumentationConfig(
-    granularity=HookGranularity.ATTENTION_ONLY,
-    compression_algorithm="lz4",  # or "zstd" or "none"
-    target_throughput_gbps=2.0,
-    max_memory_gb=24,
-)
-
-framework = InstrumentationFramework(config)
-framework.instrument_model(model)
-
-with framework.capture_activations("output.stream"):
+with capture_activations(model, preset="balanced", output_path="output.stream") as framework:
     _ = model(torch.randint(0, 100, (1, 16)))
 
 analysis = framework.analyze_activations("output.stream")
@@ -77,16 +63,34 @@ print("bytes_per_token:", analysis.get("bytes_per_token"))
 
 ## Configuration
 
-- `granularity` (`HookGranularity`):
-  - `FULL_TENSOR`: Capture all supported layer outputs.
-  - `SAMPLED_SLICES`: Randomly samples elements by `sampling_rate`.
-  - `ATTENTION_ONLY`: Only layers whose names include `attn`.
-  - `MLP_ONLY`: Only layers whose names include `mlp`.
-- `compression_algorithm` (`str`): `"lz4"`, `"zstd"`, or `"none"`.
-- `target_throughput_gbps` (`float`): Desired streaming rate for tuning.
-- `max_memory_gb` (`float|None`): Budget for host buffering policies.
+- `InstrumentationConfig.fast_capture()` - minimal overhead capture without compression.
+- `InstrumentationConfig.balanced()` - default preset balancing throughput and compression.
+- `InstrumentationConfig.max_compression()` - prioritize disk footprint with Zstd.
+- `InstrumentationConfig.attention_analysis()` / `.mlp_analysis()` - capture subsets for focused studies.
+- Builder-style overrides: e.g. `InstrumentationConfig.balanced().with_compression("zstd").with_memory_limit(16)`.
+- Direct parameters:
+  - `granularity` (`HookGranularity`): `FULL_TENSOR`, `SAMPLED_SLICES`, `ATTENTION_ONLY`, `MLP_ONLY`.
+  - `compression_algorithm` (`str`): `"lz4"`, `"zstd"`, or `"none"`.
+  - `target_throughput_gbps` (`float`): Desired streaming rate for tuning.
+  - `max_memory_gb` (`float|None`): Budget for host buffering policies.
 
 Refer to `docs/API.md` for full API details.
+
+## Automatic Configuration
+
+The `llm_instrumentation.core.auto_detect` module can derive sensible defaults from a model instance:
+
+```python
+from llm_instrumentation import capture_activations
+from llm_instrumentation.core.auto_detect import create_optimized_config, detect_model_architecture
+
+arch = detect_model_architecture(model)
+config = create_optimized_config(arch, purpose="performance_analysis")
+with capture_activations(model, config=config, output_path=f"{arch}.stream"):
+    ...
+```
+
+This path keeps manual overrides available via the builder helpers while accelerating setup for common analysis workflows.
 
 ## Stream Format
 

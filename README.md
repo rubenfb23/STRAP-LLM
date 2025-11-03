@@ -26,24 +26,15 @@ pip install -e .
 2) Capture activations
 
 ```python
-from llm_instrumentation import InstrumentationFramework, InstrumentationConfig, HookGranularity
+from llm_instrumentation import capture_activations
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 model_id = "meta-llama/Llama-2-7b-hf"  # use a smaller model locally if needed
 model = AutoModelForCausalLM.from_pretrained(model_id)
 tok = AutoTokenizer.from_pretrained(model_id)
 
-cfg = InstrumentationConfig(
-    granularity=HookGranularity.ATTENTION_ONLY,
-    compression_algorithm="lz4",  # or "zstd" or "none"
-    target_throughput_gbps=2.0,
-    max_memory_gb=24,
-)
-fw = InstrumentationFramework(cfg)
-fw.instrument_model(model)
-
 inputs = tok.encode("The future of AI is", return_tensors="pt")
-with fw.capture_activations("output.stream"):
+with capture_activations(model, preset="balanced") as fw:
     _ = model.generate(inputs, max_length=64)
 
 # Optional: per-token tracking (opt-in)
@@ -63,6 +54,10 @@ with fw.capture_activations("output_tokens.stream", track_per_token=True) as tra
 analysis_tokens = analyze_activations_with_tokens("output_tokens.stream", fw)
 print("packets_per_token:", analysis_tokens.get("packets_per_token"))
 ```
+
+Presets return mutable `InstrumentationConfig` objects so you can chain overrides: `InstrumentationConfig.balanced().with_compression("zstd").with_memory_limit(16)`.
+
+Prefer opinionated defaults? Use `llm_instrumentation.core.auto_detect.create_optimized_config` to inspect the model architecture (`gpt`, `llama`, `qwen`, `bert`) and pick a preset tuned for debugging, interpretability, performance analysis, or full capture.
 
 3) Inspect stream
 
