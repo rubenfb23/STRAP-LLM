@@ -23,7 +23,7 @@ def capture_activations(
         model: PyTorch model to instrument.
         output_path: Full output file path (auto-generated when None).
         output_dir: Directory for auto-generated paths (when output_path is None).
-        preset: Preset name ('balanced', 'fast_capture', 'max_compression', etc.).
+        preset: Preset name ('balanced', 'fast_capture', 'max', 'max_compression', etc.).
         config: Custom InstrumentationConfig (ignored when preset is provided).
         auto_timestamp: Append timestamp to the filename when True.
         prefix: Prefix for auto-generated filenames (default: "").
@@ -44,6 +44,7 @@ def capture_activations(
             "balanced": InstrumentationConfig.balanced,
             "fast_capture": InstrumentationConfig.fast_capture,
             "max_compression": InstrumentationConfig.max_compression,
+            "max": InstrumentationConfig.max,
             "attention_analysis": InstrumentationConfig.attention_analysis,
             "mlp_analysis": InstrumentationConfig.mlp_analysis,
         }

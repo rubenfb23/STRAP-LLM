@@ -35,7 +35,7 @@ with capture_activations(model, preset="balanced", output_path="output.stream") 
 # The captured data is now in "output.stream"
 ```
 
-The helper defaults to the `balanced` preset, but you can pick any preset (`fast_capture`, `max_compression`, `attention_analysis`, `mlp_analysis`) or supply a custom configuration. Presets return regular `InstrumentationConfig` objects, so you can chain overrides fluently:
+The helper defaults to the `balanced` preset, but you can pick any preset (`fast_capture`, `max`, `max_compression`, `attention_analysis`, `mlp_analysis`) or supply a custom configuration. Presets return regular `InstrumentationConfig` objects, so you can chain overrides fluently:
 
 ```python
 custom = InstrumentationConfig.balanced().with_compression("zstd").with_memory_limit(16)

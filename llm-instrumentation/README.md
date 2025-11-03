@@ -83,6 +83,7 @@ Checkpoint files default to `{output_path}.ckpt.json`; override with `checkpoint
 ## Configuration
 
 - `InstrumentationConfig.fast_capture()` - minimal overhead capture without compression.
+- `InstrumentationConfig.max()` - highest fidelity capture with maximum buffering.
 - `InstrumentationConfig.balanced()` - default preset balancing throughput and compression.
 - `InstrumentationConfig.max_compression()` - prioritize disk footprint with Zstd.
 - `InstrumentationConfig.attention_analysis()` / `.mlp_analysis()` - capture subsets for focused studies.

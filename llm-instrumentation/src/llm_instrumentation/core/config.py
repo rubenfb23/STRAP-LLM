@@ -47,6 +47,16 @@ class InstrumentationConfig:
         )
 
     @classmethod
+    def max(cls) -> "InstrumentationConfig":
+        """Highest fidelity capture with maximum buffering headroom."""
+        return cls(
+            granularity=HookGranularity.FULL_TENSOR,
+            compression_algorithm="zstd",
+            target_throughput_gbps=6.0,
+            max_memory_gb=64,
+        )
+
+    @classmethod
     def attention_analysis(cls) -> "InstrumentationConfig":
         """Attention-only capture for interpretability analysis."""
         return cls(
