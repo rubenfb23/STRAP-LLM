@@ -51,6 +51,7 @@ ebpf = [
 analysis = [
     "matplotlib>=3.5.0",
     "networkx>=3.0",
+    "pandas>=1.5.0",
 ]
 notebooks = [
     "jupyter>=1.0.0",
