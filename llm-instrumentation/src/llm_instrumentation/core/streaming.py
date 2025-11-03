@@ -32,13 +32,14 @@ class StreamingSerializer:
         self.writer_task: Optional[asyncio.Task] = None
         self.compression_tasks: List[asyncio.Task] = []
 
-    async def start_streaming(self, output_path: str) -> None:
+    async def start_streaming(self, output_path: str, resume: bool = False) -> None:
         """Start asynchronous streaming to disk."""
         if self.running:
             raise RuntimeError("Streaming is already running.")
         self.running = True
 
-        self.writer_task = asyncio.create_task(self._async_writer(output_path))
+        mode = "ab" if resume else "wb"
+        self.writer_task = asyncio.create_task(self._async_writer(output_path, mode))
         self.compression_tasks = [
             asyncio.create_task(self._compression_worker())
             for _ in range(self.num_workers)
@@ -64,9 +65,9 @@ class StreamingSerializer:
             await self.writer_task
 
 
-    async def _async_writer(self, output_path: str) -> None:
+    async def _async_writer(self, output_path: str, mode: str) -> None:
         """Asynchronous file writer."""
-        async with aiofiles.open(output_path, "wb") as f:
+        async with aiofiles.open(output_path, mode) as f:
             while self.running or len(self.ring_buffer) > 0:
                 data = await asyncio.to_thread(
                     self.ring_buffer.get, max_bytes=65536, timeout=0.1
