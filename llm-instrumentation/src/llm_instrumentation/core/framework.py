@@ -5,6 +5,7 @@ from typing import Any, Dict, Optional
 
 import torch
 
+from .checkpoint import CheckpointManager
 from .config import InstrumentationConfig
 from .hooks import HookConfig, HookGranularity, OptimizedHookManager, TensorProcessor
 from .streaming import StreamingSerializer
@@ -18,9 +19,12 @@ class _TokenBoundaryTracker:
     at the end of capture.
     """
 
-    def __init__(self):
+    def __init__(self, checkpoint_manager: Optional[CheckpointManager] = None):
         self.tokens: list = []
         self.start_time: float = 0.0
+        self._checkpoint_manager = checkpoint_manager
+        self._resume_count = 0
+        self._resumed = False
 
     def record_token(self, token_id: int, token_text: str, position: int = None):
         """Record a generated token with its metadata.
@@ -33,36 +37,71 @@ class _TokenBoundaryTracker:
         if position is None:
             position = len(self.tokens)
 
-        self.tokens.append(
-            {
-                "token_index": position,
-                "token_id": int(token_id),
-                "token_text": token_text,
-            }
-        )
+        token_payload = {
+            "token_index": position,
+            "token_id": int(token_id),
+            "token_text": token_text,
+        }
+        self.tokens.append(token_payload)
+
+        if self._checkpoint_manager and self._checkpoint_manager.has_interval():
+            self._checkpoint_manager.maybe_checkpoint(
+                self.tokens, self._build_checkpoint_metadata()
+            )
 
     def save(self, path: str):
         """Save token metadata to JSON file."""
         import json
         import time
 
+        capture_duration = time.time() - self.start_time if self.start_time else 0
         metadata = {
             "total_tokens": len(self.tokens),
             "tokens": self.tokens,
-            "capture_duration_seconds": time.time() - self.start_time if self.start_time else 0,
+            "capture_duration_seconds": capture_duration,
         }
 
         with open(path, "w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=2, ensure_ascii=False)
 
+        if self._checkpoint_manager:
+            self._checkpoint_manager.finalize(
+                self.tokens,
+                self._build_checkpoint_metadata(
+                    extra={"capture_duration_seconds": capture_duration}
+                ),
+            )
+
     def __enter__(self):
         import time
 
         self.start_time = time.time()
+
+        if self._checkpoint_manager:
+            state = self._checkpoint_manager.load()
+            if state.tokens:
+                self.tokens = list(state.tokens)
+                stored_start = state.metadata.get("start_time")
+                if stored_start:
+                    self.start_time = stored_start
+                self._resume_count = int(state.metadata.get("resume_count", 0)) + 1
+                self._resumed = True
         return self
 
     def __exit__(self, *args):
         pass
+
+    def _build_checkpoint_metadata(self, extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        import time
+
+        metadata = {
+            "start_time": self.start_time,
+            "resume_count": self._resume_count if self._resumed else 0,
+            "updated_at": time.time(),
+        }
+        if extra:
+            metadata.update(extra)
+        return metadata
 
 
 class InstrumentationFramework:
@@ -99,13 +138,24 @@ class InstrumentationFramework:
         self._models[model_id] = model
 
     @contextmanager
-    def capture_activations(self, output_path: str, track_per_token: bool = False):
+    def capture_activations(
+        self,
+        output_path: str,
+        track_per_token: bool = False,
+        checkpoint_interval_tokens: Optional[int] = None,
+        checkpoint_path: Optional[str] = None,
+        resume_from_checkpoint: bool = False,
+    ):
         """Context manager for capturing model activations to a stream file.
 
         Args:
             output_path: Path to save the activation stream
             track_per_token: If True, enables per-token tracking and saves metadata
                             to {output_path}_tokens.json. Use for reasoning analysis.
+            checkpoint_interval_tokens: If set, persist token checkpoints every N tokens.
+            checkpoint_path: Optional explicit path for the checkpoint JSON file.
+            resume_from_checkpoint: Resume token metadata and stream appends from an
+                                    existing checkpoint.
 
         Yields:
             Optional[_TokenBoundaryTracker]: Tracker object if track_per_token=True,
@@ -124,6 +174,14 @@ class InstrumentationFramework:
                     tracker.record_token(next_token.item(), tokenizer.decode(next_token))
                     input_ids = torch.cat([input_ids, next_token.unsqueeze(0)], dim=-1)
         """
+        if checkpoint_interval_tokens is not None and checkpoint_interval_tokens <= 0:
+            raise ValueError("checkpoint_interval_tokens must be a positive integer")
+
+        if (checkpoint_interval_tokens is not None or resume_from_checkpoint) and not track_per_token:
+            raise ValueError(
+                "Token checkpointing requires track_per_token=True to observe token boundaries."
+            )
+
         # Prepare async event loop and serializer
         loop = self._ensure_event_loop()
         self._serializer = StreamingSerializer(
@@ -132,12 +190,24 @@ class InstrumentationFramework:
 
         # Start streaming in the background loop
         fut_start = asyncio.run_coroutine_threadsafe(
-            self._serializer.start_streaming(output_path), loop
+            self._serializer.start_streaming(output_path, resume=resume_from_checkpoint),
+            loop,
         )
         fut_start.result()  # block until streaming is ready
 
         # Create token tracker if requested
-        token_tracker = _TokenBoundaryTracker() if track_per_token else None
+        checkpoint_manager: Optional[CheckpointManager] = None
+        if track_per_token:
+            checkpoint_file = checkpoint_path or f"{output_path}.ckpt.json"
+            checkpoint_manager = CheckpointManager(
+                checkpoint_file,
+                interval_tokens=checkpoint_interval_tokens,
+                resume=resume_from_checkpoint,
+            )
+
+        token_tracker = (
+            _TokenBoundaryTracker(checkpoint_manager) if track_per_token else None
+        )
         if token_tracker:
             token_tracker.__enter__()
 
