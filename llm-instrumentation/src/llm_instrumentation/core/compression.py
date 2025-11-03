@@ -96,6 +96,14 @@ class TensorCompressionManager:
 
         return compressed, ratio
 
+    def decompress_tensor(self, data: bytes, strategy: str = None) -> bytes:
+        """Decompress tensor bytes using the selected strategy."""
+        key = strategy or self.current_strategy
+        if key not in self.strategies:
+            raise ValueError(f"Unsupported compression strategy: {key}")
+        decompressor = self.strategies[key]
+        return decompressor.decompress(data)
+
     def _tensor_to_bytes(self, tensor: torch.Tensor) -> bytes:
         """Efficient tensor serialization."""
         return tensor.cpu().numpy().tobytes()
