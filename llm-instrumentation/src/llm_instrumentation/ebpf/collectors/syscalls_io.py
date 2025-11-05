@@ -1,15 +1,70 @@
 from __future__ import annotations
 
+import platform
 import time
+import warnings
 from collections import defaultdict
 from typing import Any, DefaultDict, Dict, Iterator, List
 
-from bcc import syscall as bcc_syscall  # type: ignore[import-not-found]
+try:
+    from bcc import syscall as bcc_syscall  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover - depends on user environment
+    bcc_syscall = None
 
 from .base import BaseCollector, CollectorConfig
 
 
-ALL_SYSCALLS: Dict[int, str] = {}
+_FALLBACK_SYSCALLS_X86_64: Dict[int, str] = {
+    0: "read",
+    1: "write",
+    3: "close",
+    7: "poll",
+    9: "mmap",
+    11: "munmap",
+    17: "pread64",
+    18: "pwrite64",
+    42: "connect",
+    43: "accept",
+    44: "sendto",
+    45: "recvfrom",
+    46: "sendmsg",
+    47: "recvmsg",
+    74: "fsync",
+    202: "futex",
+    230: "clock_nanosleep",
+    232: "epoll_wait",
+    257: "openat",
+    271: "ppoll",
+    285: "fallocate",
+}
+
+
+def _load_syscall_table() -> Dict[int, str]:
+    if bcc_syscall and hasattr(bcc_syscall, "syscalls"):
+        result: Dict[int, str] = {}
+        for nr, name in bcc_syscall.syscalls.items():
+            decoded = name.decode("utf-8")
+            result[nr] = decoded
+        return result
+
+    arch = platform.machine().lower()
+    if arch in ("x86_64", "amd64", "x64"):
+        warnings.warn(
+            "bcc.syscall is unavailable; falling back to a static syscall table for x86_64. "
+            "Install the full BCC python bindings to use dynamic tables.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return dict(_FALLBACK_SYSCALLS_X86_64)
+
+    raise RuntimeError(
+        "Unable to load syscall table: bcc.syscall module missing and no fallback available "
+        f"for architecture '{arch}'. Install the BCC python bindings (e.g. `python-bcc`) to "
+        "enable syscall collectors."
+    )
+
+
+ALL_SYSCALLS: Dict[int, str] = _load_syscall_table()
 DEFAULT_TRACKED_NAMES = [
     "read",
     "write",
@@ -28,10 +83,6 @@ DEFAULT_TRACKED_NAMES = [
     "connect",
     "accept",
 ]
-
-for nr, name in bcc_syscall.syscalls.items():
-    decoded = name.decode("utf-8")
-    ALL_SYSCALLS[nr] = decoded
 
 
 class SyscallLatencyCollector(BaseCollector):
