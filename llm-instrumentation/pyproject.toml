@@ -37,6 +37,9 @@ dependencies = [
     "aiofiles>=23.0.0",
 ]
 
+[project.scripts]
+"llm-prof" = "llm_instrumentation.cli.llm_prof:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0.0",
